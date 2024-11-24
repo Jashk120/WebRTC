@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Web Client</title>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+</head>
+<body>
+    <div id="loginContainer">
+        <input id="login" value="userA" placeholder="Enter your username">
+        <button onclick="user_login();">Login</button>
+    </div>
+    <div id="callerIDContainer" style="display: none;">
+        <input id="callerID" placeholder="Enter username to call">
+        <button onclick="call_user();">Call</button>
+    </div>
+    <div id="callStatusContainer" style="display: none;">
+        <p id="callStatus">In a call with <span id="currentCaller"></span></p>
+        <button onclick="endCall();">End Call</button>
+    </div>
+</body>
+<script src=" https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script>
+    const socket = io("http://localhost:8000");
+    let username;
+    let peerConnection;
+    let localStream = null; 
+    let remoteStream = null;
+
+    const iceServers = {
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    };
+
+    // User login
+    function user_login() {
+        const login = document.getElementById('login').value;
+        username = login;
+        socket.emit('login', { type: 'login', name: username });
+    }
+
+    // Show call interface on login success
+    function onLogin(data) {
+        if (data.success) {
+            document.getElementById('loginContainer').style.display = 'none';
+            document.getElementById('callerIDContainer').style.display = 'block';
+            console.log(`Logged in as: ${data.username}`);
+        } else {
+            alert('Username already in use. Try another.');
+        }
+    }
+
+    // Call a user
+    function call_user() {
+        const targetUser = document.getElementById('callerID').value;
+        if (!targetUser) {
+            alert('Enter a username to call.');
+            return;
+        }
+
+        if (!localStream) {
+            setupLocalStream(() => {
+                initiateCall(targetUser);
+            });
+        } else {
+            initiateCall(targetUser);
+        }
+    }
+
+    function initiateCall(targetUser) {
+        peerConnection = createPeerConnection(targetUser);
+        peerConnection.createOffer().then((offer) => {
+            return peerConnection.setLocalDescription(offer);
+        }).then(() => {
+            socket.emit('webrtc_signal', {
+                target: targetUser,
+                signal: { sdp: peerConnection.localDescription },
+            });
+            console.log(`Calling ${targetUser}...`);
+            document.getElementById('callStatusContainer').style.display = 'block';
+            document.getElementById('currentCaller').innerText = targetUser;
+        });
+    }
+
+    // End the call
+    function endCall() {
+        if (peerConnection) {
+            peerConnection.close();
+            peerConnection = null;
+        }
+        if (localStream) {
+            localStream.getTracks().forEach((track) => track.stop());
+            localStream = null; // Reset after stopping tracks
+        }
+        socket.emit('call_ended', { target: document.getElementById('currentCaller').innerText });
+        document.getElementById('callStatusContainer').style.display = 'none';
+        console.log('Call ended.');
+    }
+
+    // Accept or reject an incoming call
+    function onAnswer(data)
+{
+        if (confirm(`${data.callername} is calling you. Accept?`)) {
+            setupLocalStream(() => {
+                peerConnection = createPeerConnection(data.callername);
+                peerConnection.setRemoteDescription(new RTCSessionDescription(data.signal.sdp)).then(() => {
+                    return peerConnection.createAnswer();
+                }).then((answer) => {
+                    return peerConnection.setLocalDescription(answer);
+                }).then(() => {
+                    socket.emit('webrtc_signal', {
+                        target: data.callername,
+                        signal: { sdp: peerConnection.localDescription },
+                    });
+                    document.getElementById('callStatusContainer').style.display = 'block';
+                    document.getElementById('currentCaller').innerText = data.callername;
+                });
+            });
+        } else {
+            socket.emit('call_rejected', { callername: data.callername, from: username });
+        }
+}
+
+    // Set up the local audio stream
+    function setupLocalStream(callback) {
+        if (localStream) {
+            callback(); // If already initialized, proceed
+            return;
+        }
+
+        navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+            localStream = stream;
+            console.log('Local stream initialized.');
+            if (callback) callback();
+        }).catch((error) => {
+            console.error('Error accessing microphone:', error);
+            alert('Unable to access microphone. Please check permissions.');
+        });
+    }
+
+    // Create a new RTCPeerConnection
+    function createPeerConnection(targetUser) {
+        const pc = new RTCPeerConnection(iceServers);
+
+        if (localStream) {
+            localStream.getTracks().forEach((track) => {
+                pc.addTrack(track, localStream);
+            });
+        } else {
+            console.error('Local stream is not initialized.');
+        }
+
+        pc.ontrack = (event) => {
+            if (!remoteStream) {
+                remoteStream = new MediaStream();
+                const remoteAudio = document.createElement('audio');
+                remoteAudio.srcObject = remoteStream;
+                remoteAudio.autoplay = true;
+                document.body.appendChild(remoteAudio);
+            }
+            remoteStream.addTrack(event.track);
+        };
+
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                socket.emit('webrtc_signal', {
+                    target: targetUser,
+                    signal: { candidate: event.candidate },
+                });
+            }
+        };
+
+        return pc;
+}
+
+    // Handle WebRTC signaling
+    socket.on('webrtc_signal', (data) => {
+        if (!peerConnection) peerConnection = createPeerConnection(data.sender);
+
+        if (data.signal.sdp) {
+            peerConnection.setRemoteDescription(new RTCSessionDescription(data.signal.sdp)).then(() => {
+                if (data.signal.sdp.type === 'offer') {
+                    peerConnection.createAnswer().then((answer) => {
+                        return peerConnection.setLocalDescription(answer);
+                    }).then(() => {
+                        socket.emit('webrtc_signal', {
+                            target: data.sender,
+                            signal: { sdp: peerConnection.localDescription },
+                        });
+                    });
+                }
+            });
+        } else if (data.signal.candidate) {
+            peerConnection.addIceCandidate(new RTCIceCandidate(data.signal.candidate));
+        }
+    });
+
+    // Handle server messages
+    socket.on('message', function (message) {
+        const data = message;
+        switch (data.type) {
+            case 'login':
+                onLogin(data);
+                break;
+            case 'call_request':
+                onAnswer(data);
+                break;
+            case 'call_response':
+                console.log('Call response:', data.response);
+                break;
+            default:
+                break;
+        }
+    });
+
+    socket.on('disconnect', () => {
+        console.log('Disconnected from server.');
+        if (peerConnection) {
+            peerConnection.close();
+            peerConnection = null;
+        }
+    });
+</script>
+</html>

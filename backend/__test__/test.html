@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Socket.IO Test</title>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+</head>
+<body>
+  <h1>Socket.IO Chat Test</h1>
+
+  <!-- Chat Room -->
+  <div>
+    <label for="chatId">Enter Chat Room ID:</label>
+    <input type="text" id="chatId" />
+    <button id="joinChatButton">Join Chat</button>
+  </div>
+
+  <!-- Typing Indicator -->
+  <div>
+    <label for="message">Type a message:</label>
+    <input type="text" id="message" />
+    <button id="sendMessageButton">Send Message</button>
+  </div>
+
+  <div>
+    <p id="status">Status: Not connected</p>
+  </div>
+
+  <script>
+    const socket = io('http://localhost:8080');  // Change to your server's URL and port
+
+    const joinChatButton = document.getElementById('joinChatButton');
+    const chatIdInput = document.getElementById('chatId');
+    const messageInput = document.getElementById('message');
+    const sendMessageButton = document.getElementById('sendMessageButton');
+    const statusElement = document.getElementById('status');
+
+    // Show connection status
+    socket.on('connect', () => {
+      statusElement.textContent = 'Status: Connected';
+    });
+
+    socket.on('disconnect', () => {
+      statusElement.textContent = 'Status: Disconnected';
+    });
+
+    // Join chat room
+    joinChatButton.addEventListener('click', () => {
+      const chatId = chatIdInput.value.trim();
+      if (chatId) {
+        socket.emit('join_chat_event', chatId);  // Emit the JOIN_CHAT_EVENT
+        console.log(`Joined chat: ${chatId}`);
+      }
+    });
+
+    // Typing event
+    messageInput.addEventListener('input', () => {
+      const chatId = chatIdInput.value.trim();
+      if (chatId && messageInput.value) {
+        socket.emit('typing_event', chatId);  // Emit the TYPING_EVENT
+      }
+    });
+
+    // Send message (example)
+    sendMessageButton.addEventListener('click', () => {
+      const message = messageInput.value.trim();
+      const chatId = chatIdInput.value.trim();
+      if (message && chatId) {
+        socket.emit('message_sent_event', { chatId, message });
+        console.log(`Sent message: ${message}`);
+      }
+    });
+
+    // Listen for typing event
+    socket.on('typing_event', (chatId) => {
+      console.log(`User is typing in chat: ${chatId}`);
+      // Optionally update UI with typing indicator
+    });
+
+    // Listen for received message
+    socket.on('message_received_event', (data) => {
+      console.log(`Message received in chat ${data.chatId}: ${data.message}`);
+      // Optionally update UI to display message
+    });
+  </script>
+</body>
+</html>
